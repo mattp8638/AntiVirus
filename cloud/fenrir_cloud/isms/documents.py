@@ -155,11 +155,49 @@ def build_context(db: Session, tenant_id: str) -> dict:
                         "excluded": sum(1 for s in soa if not s["applicable"])},
         "suppliers": [{"name": a.name, "classification": _cap(a.classification),
                        "owner": owners.get(a.owner_user_id or "", "Unassigned")} for a in suppliers],
-        # Filled in as the people, objectives, audit, review and improvement modules are ported (Phase 4).
-        "isms_roles": [], "raci": [], "objectives": [], "audit_programme": None, "last_review": None,
-        "improvement": {"open": 0, "closed": 0, "opportunities": 0}, "acknowledgements": [],
+        **_management_context(db, tenant_id),
         "documents": published,
         "document": {},
+    }
+
+
+def _management_context(db: Session, tenant_id: str) -> dict:
+    """Objectives, the audit programme and improvement figures, as the standalone app's phase2Context gives them.
+    People (roles, RACI, acknowledgements) and management review are filled in as those modules are ported."""
+    from . import audits, management
+    from .domain._js import js_number
+
+    def unit(o: dict) -> str:
+        return f" {o['unit']}" if o["unit"] else ""
+
+    objectives = [o for o in management.objective_rows(db, tenant_id) if o["status"] == "active"]
+    programmes = audits.programme_rows(db, tenant_id)
+    prog = programmes[0] if programmes else None
+    ncs = management.nonconformity_rows(db, tenant_id, "all")
+    return {
+        "isms_roles": [], "raci": [], "last_review": None, "acknowledgements": [],
+        "objectives": [{
+            "ref": o["ref"], "title": o["title"], "measure": o["measure"],
+            "target": f"{'At least' if o['direction'] == 'at_least' else 'At most'} {js_number(o['target'])}{unit(o)}",
+            "owner": o["ownerName"] or "Unassigned", "due": uk_date(o["dueOn"]) if o["dueOn"] else "Ongoing",
+            "plan": o["plan"] or "To be planned.", "resources": o["resources"] or "Existing resources.",
+            "frequency": o["frequency"],
+            "latest": (f"{js_number(o['summary']['latest']['value'])}{unit(o)} on "
+                       f"{uk_date(o['summary']['latest']['measuredOn'])}") if o["summary"]["latest"] else "No result yet",
+        } for o in objectives],
+        "audit_programme": {
+            "title": prog["title"], "period": f"{uk_date(prog['periodStart'])} to {uk_date(prog['periodEnd'])}",
+            "coverage": f"{prog['coverage']['percent']}%",
+            "audits": [{"ref": a["ref"], "title": a["title"],
+                        "dates": f"{uk_date(a['plannedStart'])} to {uk_date(a['plannedEnd'])}",
+                        "lead": a["leadAuditorName"] or "To be chosen",
+                        "status": _cap(a["status"].replace("_", " ", 1))} for a in prog["audits"]],
+        } if prog else None,
+        "improvement": {
+            "open": sum(1 for n in ncs if n["kind"] == "nonconformity" and n["status"] == "open"),
+            "closed": sum(1 for n in ncs if n["kind"] == "nonconformity" and n["status"] == "closed"),
+            "opportunities": sum(1 for n in ncs if n["kind"] == "opportunity" and n["status"] == "open"),
+        },
     }
 
 

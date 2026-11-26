@@ -16,6 +16,7 @@ import { IsmsEvidenceTab } from "./grc/IsmsEvidence";
 import { IsmsTasksTab } from "./grc/IsmsTasks";
 import { IsmsDocumentsTab } from "./grc/IsmsDocuments";
 import { IsmsImprovementTab } from "./grc/IsmsImprovement";
+import { IsmsAuditsTab } from "./grc/IsmsAudits";
 import { COMPLIANCE_SECTION, SectionTabs } from "../components/sections";
 
 const CONTROL_TONE:Record<string,string>={met:"good",evidenced:"good",exception:"warn",gap:"bad"};
@@ -59,7 +60,7 @@ export default function Governance() {
     <PageHead title="GRC & compliance" subtitle="UK and UK-targeted governance programmes with requirements, answers, policies, evidence and a risk register."
       actions={can("grc")&&tab==="Risk register"&&<button className="primary" onClick={()=>setCreate({})}>New record</button>}/>
     <ErrorNote error={error}/>
-    <Tabs tabs={["Programmes","Policies","Evidence","Risk register","Controls","Programme setup","ISMS controls","Statement of Applicability","ISMS risks","ISMS evidence","ISMS tasks","ISMS documents","ISMS improvement","Organization","Assets","ISMS roles"]} active={tab} onChange={setTab}/>
+    <Tabs tabs={["Programmes","Policies","Evidence","Risk register","Controls","Programme setup","ISMS controls","Statement of Applicability","ISMS risks","ISMS evidence","ISMS tasks","ISMS documents","ISMS improvement","Internal audit","Organization","Assets","ISMS roles"]} active={tab} onChange={setTab}/>
     {tab==="Programmes"&&<ProgrammesTab/>}
     {tab==="Policies"&&<PoliciesTab/>}
     {tab==="Evidence"&&<EvidenceTab/>}
@@ -71,6 +72,7 @@ export default function Governance() {
     {tab==="ISMS tasks"&&<IsmsTasksTab/>}
     {tab==="ISMS documents"&&<IsmsDocumentsTab/>}
     {tab==="ISMS improvement"&&<IsmsImprovementTab/>}
+    {tab==="Internal audit"&&<IsmsAuditsTab/>}
     {tab==="Organization"&&<IsmsOrganizationTab/>}
     {tab==="Assets"&&<IsmsAssetsTab/>}
     {tab==="ISMS roles"&&<IsmsRolesTab/>}

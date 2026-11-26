@@ -542,3 +542,85 @@ class IsmsChange(_Row, Base):
     status: Mapped[str] = mapped_column(String(20), default="planned")  # planned | in_progress | done | cancelled
     completed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     outcome: Mapped[str] = mapped_column(Text, default="")
+
+
+@tenant_table
+class IsmsAuditProgramme(_Row, Base):
+    """An internal audit programme for a period (ISO 27001 9.2)."""
+    __tablename__ = "isms_audit_programmes"
+    __table_args__ = (UniqueConstraint("tenant_id", "title", name="uq_isms_audit_programme_title"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iap"))
+    title: Mapped[str] = mapped_column(String(160))
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    objectives: Mapped[str] = mapped_column(Text, default="")
+
+
+@tenant_table
+class IsmsAudit(_Row, Base):
+    """One internal audit. A completed audit is a record and never changes (see the guard below)."""
+    __tablename__ = "isms_audits"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_audit_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iau"))
+    programme_id: Mapped[str] = mapped_column(ForeignKey("isms_audit_programmes.id"), index=True)
+    ref: Mapped[str] = mapped_column(String(20))  # AUD-001
+    title: Mapped[str] = mapped_column(String(160))
+    scope: Mapped[str] = mapped_column(Text, default="")
+    frameworks: Mapped[list[str]] = mapped_column(JSON, default=list)
+    planned_start: Mapped[date] = mapped_column(Date)
+    planned_end: Mapped[date] = mapped_column(Date)
+    lead_auditor_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    other_auditors: Mapped[str] = mapped_column(Text, default="")
+    independence_note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="planned")  # planned | in_progress | completed
+    summary: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsAuditCheck(_Row, Base):
+    """A checklist item: a snapshot of one requirement at generation time, with the auditor's result."""
+    __tablename__ = "isms_audit_checks"
+    __table_args__ = (UniqueConstraint("audit_id", "framework", "requirement_ref", name="uq_isms_audit_check"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iak"))
+    audit_id: Mapped[str] = mapped_column(ForeignKey("isms_audits.id"), index=True)
+    framework: Mapped[str] = mapped_column(String(80))
+    requirement_ref: Mapped[str] = mapped_column(String(80))
+    requirement_title: Mapped[str] = mapped_column(String(300))
+    group_title: Mapped[str] = mapped_column(String(300), default="")
+    mandatory: Mapped[bool] = mapped_column(Boolean, default=False)
+    controls: Mapped[str] = mapped_column(Text, default="")
+    sort: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[str | None] = mapped_column(String(20), nullable=True)  # conforms | observation | minor | major | not_assessed
+    notes: Mapped[str] = mapped_column(Text, default="")
+    evidence_seen: Mapped[str] = mapped_column(Text, default="")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    checked_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class CompletedAudit(RuntimeError):
+    """A completed audit, or its checklist, was about to change."""
+
+
+def _guard_audits(session, _flush_context, _instances) -> None:
+    from sqlalchemy import inspect as sa_inspect
+
+    for obj in list(session.new) + list(session.dirty) + list(session.deleted):
+        if isinstance(obj, IsmsAudit) and obj not in session.new:
+            hist = sa_inspect(obj).attrs.status.history
+            was = (hist.deleted or [obj.status])[0] if hist.has_changes() else obj.status
+            if was == "completed" and (obj in session.deleted or session.is_modified(obj)):
+                raise CompletedAudit("A completed audit cannot change.")
+            if obj in session.deleted and was != "planned":
+                raise CompletedAudit("Only a planned audit can be deleted.")
+        elif isinstance(obj, IsmsAuditCheck):
+            parent = session.get(IsmsAudit, obj.audit_id)
+            if parent is not None:
+                hist = sa_inspect(parent).attrs.status.history
+                was = (hist.deleted or [parent.status])[0] if hist.has_changes() else parent.status
+                if was == "completed":
+                    raise CompletedAudit("The audit is completed; its checklist cannot change.")
+
+
+_event.listen(_Session, "before_flush", _guard_audits)

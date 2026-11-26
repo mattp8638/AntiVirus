@@ -1140,3 +1140,170 @@ def update_change(change_id: str, body: dict = Body(...), principal: Principal =
     _mgmt().save_change(db, row.tenant_id, principal.actor, body, _members(db, row.tenant_id), row)
     db.commit()
     return next(c for c in _mgmt().change_rows(db, row.tenant_id) if c["id"] == row.id)
+
+
+# Internal audit (Phase 4) -----------------------------------------------------------------------------------------
+
+def _audits():
+    from ..isms import audits
+    return audits
+
+
+def _audit_role(db: Session, principal: Principal, tenant_id: str, permission: str) -> str:
+    """Auditors log findings; ISMS managers plan. Both read with controls.view."""
+    return require_isms(db, principal, tenant_id, permission)
+
+
+@router.get("/audit-programmes")
+def list_audit_programmes(tenant_id: str, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    role = _audit_role(db, principal, tenant_id, "controls.view")
+    return {"programmes": _audits().programme_rows(db, tenant_id),
+            "groups": _audits().auditable_groups(db, tenant_id),
+            "frameworks": [f.framework for f in programme.tenant_frameworks(db, tenant_id)],
+            "canPlan": access.can(role, "programme.manage"), "canAudit": access.can(role, "findings.log")}
+
+
+@router.post("/audit-programmes")
+def add_audit_programme(body: TenantBody, principal: Principal = Depends(current_principal),
+                        db: Session = Depends(isms_db)):
+    _audit_role(db, principal, body.tenant_id, "programme.manage")
+    row = _audits().save_programme(db, body.tenant_id, principal.actor, dict(body.model_extra or {}))
+    db.commit()
+    return _audits().programme_rows(db, body.tenant_id, row.id)[0]
+
+
+@router.patch("/audit-programmes/{programme_id}")
+def update_audit_programme(programme_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                           db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsAuditProgramme
+    row = get_scoped(db, IsmsAuditProgramme, programme_id, principal)
+    _audit_role(db, principal, row.tenant_id, "programme.manage")
+    _audits().save_programme(db, row.tenant_id, principal.actor, body, row)
+    db.commit()
+    return _audits().programme_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.post("/audit-programmes/{programme_id}/audits")
+def plan_audit(programme_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+               db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsAuditProgramme
+    prog = get_scoped(db, IsmsAuditProgramme, programme_id, principal)
+    _audit_role(db, principal, prog.tenant_id, "programme.manage")
+    row = _audits().create_audit(db, prog, principal.actor, body, _members(db, prog.tenant_id))
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+def _audit(db, principal, audit_id):
+    from ..isms.models import IsmsAudit
+    return get_scoped(db, IsmsAudit, audit_id, principal)
+
+
+@router.get("/audits/{audit_id}")
+def get_audit(audit_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "controls.view")
+    return _audits().audit_view(db, row)
+
+
+@router.patch("/audits/{audit_id}")
+def update_audit(audit_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                 db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "programme.manage")
+    _audits().update_audit(db, row, principal.actor, body, _members(db, row.tenant_id))
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+@router.delete("/audits/{audit_id}")
+def delete_audit(audit_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "programme.manage")
+    _audits().delete_audit(db, row, principal.actor)
+    db.commit()
+    return {"ok": True}
+
+
+class ChecklistBody(BaseModel):
+    groups: list[str] = []
+
+
+@router.post("/audits/{audit_id}/checklist")
+def audit_checklist(audit_id: str, body: ChecklistBody, principal: Principal = Depends(current_principal),
+                    db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "programme.manage")
+    _audits().generate_checklist(db, row, principal.actor, body.groups)
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+@router.post("/audits/{audit_id}/start")
+def start_audit(audit_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "findings.log")
+    _audits().start_audit(db, row, principal.actor)
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+class CheckBody(BaseModel):
+    result: str
+    notes: str = ""
+    evidenceSeen: str = ""
+
+
+@router.put("/audit-checks/{check_id}")
+def record_audit_check(check_id: str, body: CheckBody, principal: Principal = Depends(current_principal),
+                       db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsAuditCheck
+    check = get_scoped(db, IsmsAuditCheck, check_id, principal)
+    _audit_role(db, principal, check.tenant_id, "findings.log")
+    parent = _audits().record_check(db, check, principal.actor, principal.user.id, body.model_dump())
+    db.commit()
+    return _audits().audit_view(db, parent)
+
+
+class FindingBody(BaseModel):
+    ownerId: str | None = None
+
+
+@router.post("/audit-checks/{check_id}/finding")
+def raise_audit_finding(check_id: str, body: FindingBody, principal: Principal = Depends(current_principal),
+                        db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsAudit, IsmsAuditCheck
+    check = get_scoped(db, IsmsAuditCheck, check_id, principal)
+    _audit_role(db, principal, check.tenant_id, "findings.log")
+    _audits().raise_finding(db, check, principal.actor, principal.user.id, body.ownerId, _members(db, check.tenant_id))
+    db.commit()
+    return _audits().audit_view(db, db.get(IsmsAudit, check.audit_id))
+
+
+class CompleteAuditBody(BaseModel):
+    summary: str
+
+
+@router.post("/audits/{audit_id}/complete")
+def complete_audit(audit_id: str, body: CompleteAuditBody, principal: Principal = Depends(current_principal),
+                   db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "findings.log")
+    _audits().complete_audit(db, row, principal.actor, body.summary)
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+class SampleBody(BaseModel):
+    tenantId: str
+    population: list[str]
+    size: int | None = None
+    seed: str
+
+
+@router.post("/audit-sample")
+def audit_sample(body: SampleBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """Draws a reproducible sample. Nothing is stored; the seed lets anyone draw the same sample again."""
+    _audit_role(db, principal, body.tenantId, "findings.log")
+    return _audits().sample(body.population, body.size, body.seed)

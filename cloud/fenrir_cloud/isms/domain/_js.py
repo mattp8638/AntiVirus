@@ -70,3 +70,10 @@ def parse_instant(s: str) -> datetime:
         return datetime.combine(parse_day(s), datetime.min.time(), timezone.utc)
     dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     return utc(dt)
+
+
+def js_number(x: float) -> str:
+    """A number as JavaScript's String(x) writes it for ordinary values: 14.0 is "14", 2.5 stays "2.5"."""
+    if x == int(x) and abs(x) < 1e21:
+        return str(int(x))
+    return repr(float(x))

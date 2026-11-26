@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsChange, IsmsCorrectiveAction, IsmsEvidence, IsmsEvidenceLink, IsmsImport, IsmsMetricValue, IsmsNonconformity, IsmsObjective, IsmsLegacyAnswer, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
+from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsAudit, IsmsAuditCheck, IsmsAuditProgramme, IsmsChange, IsmsCorrectiveAction, IsmsEvidence, IsmsEvidenceLink, IsmsImport, IsmsMetricValue, IsmsNonconformity, IsmsObjective, IsmsLegacyAnswer, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
                                       IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
                                       IsmsRisk, IsmsRiskAcceptance, IsmsRiskControl, IsmsRiskMethod,
                                       IsmsRiskSnapshot, IsmsSite, IsmsTenantControl, IsmsTenantFramework)
@@ -61,6 +61,12 @@ FACTORIES: dict[type, callable] = {
     IsmsMetricValue: lambda t: IsmsMetricValue(tenant_id=t, objective_id=f"iob_{t}", measured_on=date(2026, 11, 1),
                                                value=10),
     IsmsChange: lambda t: IsmsChange(tenant_id=t, ref="CHG-001", title="New MDM", purpose="Manage phones"),
+    IsmsAuditProgramme: lambda t: IsmsAuditProgramme(tenant_id=t, title="Programme", period_start=date(2027, 1, 1),
+                                                     period_end=date(2027, 12, 31)),
+    IsmsAudit: lambda t: IsmsAudit(tenant_id=t, programme_id=f"iap_{t}", ref="AUD-001", title="Audit",
+                                   planned_start=date(2027, 3, 1), planned_end=date(2027, 3, 2)),
+    IsmsAuditCheck: lambda t: IsmsAuditCheck(tenant_id=t, audit_id=f"iau_{t}", framework="iso27001",
+                                             requirement_ref="9.2", requirement_title="Internal audit"),
     IsmsLegacyAnswer: lambda t: IsmsLegacyAnswer(tenant_id=t, framework="iso27001", source_framework="iso-27001",
                                                  source_ref="A.7.4", status="not_applicable"),
     IsmsImport: lambda t: IsmsImport(tenant_id=t, source_table="grc_policies", source_id=f"grcp_{t}",

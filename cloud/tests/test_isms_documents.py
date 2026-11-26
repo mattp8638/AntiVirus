@@ -146,3 +146,22 @@ def test_documents_are_isolated(client, admin, prog):
     assert client.get(f"/api/console/isms/documents/{g['documentId']}", headers=x).status_code == 404
     assert client.get(f"/api/console/isms/documents/versions/{g['versionId']}/file", headers=x).status_code == 404
     assert act(client, x, g["versionId"], "submit").status_code == 404
+
+
+def test_objectives_audits_and_improvement_reach_the_documents(client, admin, prog):
+    h, a, tid = prog
+    o = client.post("/api/console/isms/objectives", headers=h, json={
+        "tenantId": tid, "title": "Patch quickly", "measure": "Median days to patch", "unit": "days",
+        "direction": "at_most", "target": 14}).json()
+    client.post(f"/api/console/isms/objectives/{o['id']}/values", headers=h, json={"measuredOn": "2026-01-05", "value": 9})
+    client.post("/api/console/isms/audit-programmes", headers=h, json={"tenantId": tid, "title": "Programme 2027",
+                                                                      "periodStart": "2027-01-01", "periodEnd": "2027-12-31"})
+    g = generate(client, h, tid, "objectives-plan")
+    html = client.get(f"/api/console/isms/documents/{g['documentId']}", headers=h).json()["html"]
+    assert "At most 14 days" in html and "9 days on 05/01/2026" in html
+    from fenrir_cloud import db as database
+    from fenrir_cloud.isms.documents import build_context
+    with database.session_factory()() as db:
+        ctx = build_context(db, tid)
+    assert ctx["audit_programme"]["period"] == "01/01/2027 to 31/12/2027"
+    assert ctx["improvement"] == {"open": 0, "closed": 0, "opportunities": 0}

@@ -140,6 +140,19 @@ Readiness is the share of applicable requirements that are met, where a requirem
 
 Every step is recorded in the audit log.
 
+## Internal audit
+
+**Internal audit** (9.2) holds audit programmes, each covering a period, and the audits planned in them. ISMS managers plan; people with the auditor role (or ISMS managers) carry out audits.
+
+- Each audit names the frameworks it covers, its dates (starting inside the programme period), a lead auditor with an ISMS role in the customer, and a note on how the auditors are independent of what they audit.
+- **Generate checklist** adds every clause and every applicable requirement of those frameworks, optionally limited to some groups (for example clause 9 and the people controls). Each item is a snapshot, so later pack updates do not change it. Refreshing keeps items that already have a result.
+- Once started, the auditor records a result for each item (conforms, observation, minor or major nonconformity, not assessed) with what was found and the evidence seen. A minor or major finding must be raised as a nonconformity before the audit can be completed; an observation can be raised as an improvement. Both then follow the **ISMS improvement** workflow.
+- Completing needs a result for every item, the independence note and a summary. A completed audit and its checklist never change. Only a planned audit can be deleted.
+- Coverage shows how many of the requirements that must be audited the programme's audits have checked.
+- **Draw a sample** picks items from a list (for example leavers or changes) so the same list, size and seed always give the same sample, which lets anyone check it. Nothing is stored.
+
+Objectives, the latest audit programme and improvement figures also appear in the generated ISMS documents (for example the objectives plan and the internal audit procedure).
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).
