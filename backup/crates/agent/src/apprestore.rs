@@ -283,6 +283,145 @@ Get-MailboxStatistics -Database {rdb} | Sort-Object DisplayName | Format-Table D
     )
 }
 
+/// The log base name ("E00".."E99") of an Exchange database's transaction
+/// logs, from the restored log file names (`E00.log`, `E000000001A.log`).
+pub fn log_prefix<'a>(files: impl Iterator<Item = &'a PathBuf>) -> Option<String> {
+    let mut found: Vec<String> = files
+        .filter_map(|p| p.file_name()?.to_str())
+        .filter(|n| n.len() >= 7 && n.to_ascii_lowercase().ends_with(".log"))
+        .filter_map(|n| {
+            let b = n.as_bytes();
+            (b[0].eq_ignore_ascii_case(&b'e') && b[1].is_ascii_digit() && b[2].is_ascii_digit())
+                .then(|| n[..3].to_ascii_uppercase())
+        })
+        .collect();
+    found.sort();
+    found.dedup();
+    // Two databases' logs in one folder would be ambiguous.
+    (found.len() == 1).then(|| found.remove(0))
+}
+
+/// The name of the recovery database a mailbox restore creates: unique per
+/// image, so two restores never meet, and limited to safe characters.
+pub fn recovery_db_name(db: &str, image_id: &uuid::Uuid) -> String {
+    let clean: String = db
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(40)
+        .collect();
+    format!("Recovery-{clean}-{}", &image_id.simple().to_string()[..8])
+}
+
+/// PowerShell that restores one mailbox from restored Exchange database
+/// files, unattended (docs/design/app-restore.md): replay the logs with
+/// eseutil, mount the files as a recovery database, start a mailbox restore
+/// request, wait for it, then remove the request and the recovery database.
+/// Prints one JSON line: `{"state", "stage", "items", "bytes", "mailboxes", "error"}`.
+/// Every name goes in base64, never spliced into the script.
+pub fn mailbox_script(
+    edb: &Path,
+    log_dir: &Path,
+    prefix: &str,
+    rdb: &str,
+    request: &str,
+    m: &protocol::MailboxRestore,
+) -> String {
+    use base64::Engine;
+    let b = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+function D($s) {{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($s)) }}
+$Edb = D '{edb}'; $Logs = D '{logs}'; $Prefix = D '{prefix}'; $Rdb = D '{rdb}'; $Req = D '{req}'
+$Source = D '{source}'; $Target = D '{target}'; $Folder = D '{folder}'
+$out = [ordered]@{{ state = 'Failed'; stage = 'connect'; items = 0; bytes = ''; mailboxes = @(); error = '' }}
+$mounted = $false; $created = $false; $requested = $false
+try {{
+  if (-not (Get-Command New-MailboxRestoreRequest -ErrorAction SilentlyContinue)) {{
+    try {{ Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn }}
+    catch {{ . (Join-Path $env:ExchangeInstallPath 'bin\RemoteExchange.ps1'); Connect-ExchangeServer -auto -AllowClobber }}
+  }}
+  $ese = Join-Path $env:ExchangeInstallPath 'Bin\eseutil.exe'
+  if (-not (Test-Path $ese)) {{ $ese = 'eseutil.exe' }}
+  $out.stage = 'replay'
+  $r = & $ese /r $Prefix "/l$Logs" "/s$Logs" "/d$(Split-Path $Edb)" /i 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) {{ throw "eseutil /r failed: $r" }}
+  $h = & $ese /mh $Edb 2>&1 | Out-String
+  if ($h -notmatch 'State:\s*Clean Shutdown') {{ throw 'the database is not in a clean shutdown state after replaying the logs' }}
+  $out.stage = 'mount'
+  if (Get-MailboxDatabase -Identity $Rdb -ErrorAction SilentlyContinue) {{ throw "a database named $Rdb already exists" }}
+  [void](New-MailboxDatabase -Recovery -Name $Rdb -Server $env:COMPUTERNAME -EdbFilePath $Edb -LogFolderPath $Logs)
+  $created = $true
+  Mount-Database -Identity $Rdb; $mounted = $true
+  $out.stage = 'find'
+  $all = @(Get-MailboxStatistics -Database $Rdb | Where-Object {{ $_.DisplayName }})
+  $out.mailboxes = @($all | Sort-Object DisplayName | ForEach-Object {{ [string]$_.DisplayName }})
+  $src = @($all | Where-Object {{ $_.DisplayName -eq $Source -or [string]$_.MailboxGuid -eq $Source }})
+  if ($src.Count -ne 1) {{ throw $(if ($src.Count -eq 0) {{ "no mailbox named $Source in the backup" }} else {{ "$($src.Count) mailboxes are named $Source in the backup: give its mailbox GUID" }}) }}
+  $out.stage = 'restore'
+  $p = @{{ Name = $Req; SourceDatabase = $Rdb; SourceStoreMailbox = $src[0].MailboxGuid; TargetMailbox = $Target; AllowLegacyDNMismatch = $true }}
+  if ($Folder) {{ $p.TargetRootFolder = $Folder }}
+  [void](New-MailboxRestoreRequest @p); $requested = $true
+  $deadline = (Get-Date).AddHours(24)
+  do {{
+    Start-Sleep -Seconds 15
+    $st = Get-MailboxRestoreRequest -Name $Req | Get-MailboxRestoreRequestStatistics
+  }} while ([string]$st.Status -notin @('Completed', 'CompletedWithWarning', 'Failed') -and (Get-Date) -lt $deadline)
+  $out.state = [string]$st.Status
+  $out.items = [int64]$st.ItemsTransferred
+  $out.bytes = [string]$st.BytesTransferred
+  if ($out.state -eq 'Failed') {{ $out.error = [string]$st.Message }}
+  elseif ($out.state -notin @('Completed', 'CompletedWithWarning')) {{ $out.state = 'Failed'; $out.error = 'the mailbox restore did not finish within 24 hours' }}
+  else {{ $out.stage = 'done' }}
+}} catch {{
+  $out.error = [string]$_.Exception.Message
+}} finally {{
+  if ($requested) {{ Get-MailboxRestoreRequest -Name $Req -ErrorAction SilentlyContinue | Remove-MailboxRestoreRequest -Confirm:$false -ErrorAction SilentlyContinue }}
+  if ($mounted) {{ Dismount-Database -Identity $Rdb -Confirm:$false -ErrorAction SilentlyContinue }}
+  if ($created) {{ Remove-MailboxDatabase -Identity $Rdb -Confirm:$false -ErrorAction SilentlyContinue }}
+}}
+$out | ConvertTo-Json -Depth 3 -Compress
+"#,
+        edb = b(&edb.display().to_string()),
+        logs = b(&log_dir.display().to_string()),
+        prefix = b(prefix),
+        rdb = b(rdb),
+        req = b(request),
+        source = b(&m.source),
+        target = b(&m.target),
+        folder = b(&m.folder),
+    )
+}
+
+/// The JSON line `mailbox_script` printed.
+pub fn parse_mailbox(output: &str) -> anyhow::Result<serde_json::Value> {
+    let line = output
+        .lines()
+        .rev()
+        .find(|l| l.trim_start().starts_with('{'))
+        .ok_or_else(|| anyhow!("no result from the mailbox restore"))?;
+    let v: serde_json::Value = serde_json::from_str(line.trim())?;
+    if !v["state"].is_string() || !v["stage"].is_string() {
+        bail!("unexpected mailbox restore result");
+    }
+    Ok(v)
+}
+
+/// Checks a mailbox restore request before any work starts.
+pub fn check_mailbox(m: &protocol::MailboxRestore) -> anyhow::Result<()> {
+    for (what, v, max) in [
+        ("source mailbox", &m.source, 256),
+        ("target mailbox", &m.target, 320),
+    ] {
+        if v.trim().is_empty() || v.len() > max || v.chars().any(char::is_control) {
+            bail!("the {what} must be given, on one line");
+        }
+    }
+    if m.folder.len() > 255 || m.folder.chars().any(char::is_control) {
+        bail!("the target folder must be one line of at most 255 characters");
+    }
+    Ok(())
+}
+
 pub struct AppRestoreRequest<'a> {
     pub image_id: uuid::Uuid,
     pub component: &'a str,
@@ -290,6 +429,8 @@ pub struct AppRestoreRequest<'a> {
     /// SQL Server: attach under this name on `sql_instance` ("" = default instance).
     pub attach_as: Option<&'a str>,
     pub sql_instance: &'a str,
+    /// Exchange: restore this mailbox unattended.
+    pub mailbox: Option<&'a protocol::MailboxRestore>,
 }
 
 pub fn run(
@@ -308,6 +449,15 @@ pub fn run(
         bail!("this backup does not list the files of {}; it was taken by an older agent: restore the volume or use Browse files", app.component);
     }
     let kind = kind_of(&app.writer);
+    if let Some(mb) = req.mailbox {
+        if kind != AppKind::Exchange {
+            bail!(
+                "{} is not an Exchange database: a mailbox can only be restored from one",
+                app.component
+            );
+        }
+        check_mailbox(mb)?;
+    }
     let name = app
         .component
         .rsplit('\\')
@@ -484,6 +634,52 @@ pub fn run(
             let file = target.join(format!("recover-{}.ps1", crate::restore::safe_name(&name)));
             std::fs::write(&file, script)?;
             result["script"] = json!(file.display().to_string());
+            if let Some(mb) = req.mailbox {
+                let prefix = log_prefix(logs.iter().chain(&others)).unwrap_or_else(|| "E00".into());
+                let rdb = recovery_db_name(&name, &req.image_id);
+                let request = format!(
+                    "Fenrir-{}",
+                    &uuid::Uuid::new_v4().simple().to_string()[..12]
+                );
+                rep.progress("restoring the mailbox", 0, 0, &mb.source);
+                let check = match crate::hyperv::run_ps(&mailbox_script(
+                    &edb, &target, &prefix, &rdb, &request, mb,
+                ))
+                .and_then(|o| parse_mailbox(&o))
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        json!({ "state": "Failed", "stage": "run", "error": format!("{e:#}") })
+                    }
+                };
+                let ok = matches!(
+                    check["state"].as_str(),
+                    Some("Completed" | "CompletedWithWarning")
+                );
+                if !ok {
+                    u.state = JobState::Failed;
+                    u.warnings.push(format!(
+                        "The database files are restored, but restoring mailbox {} failed at the {} step: {}. {} is in that folder to do it by hand.",
+                        mb.source,
+                        check["stage"].as_str().unwrap_or("?"),
+                        check["error"].as_str().unwrap_or("unknown error"),
+                        file.display()
+                    ));
+                } else if check["state"] == "CompletedWithWarning" {
+                    u.state = JobState::Warning;
+                    u.warnings.push(format!(
+                        "Mailbox {} was restored with warnings from Exchange.",
+                        mb.source
+                    ));
+                }
+                result["mailbox"] = json!({ "source": mb.source, "target": mb.target, "folder": mb.folder,
+                                            "state": check["state"], "items": check["items"], "bytes": check["bytes"] });
+                checks.push(json!({ "type": "exchange-mailbox-restore", "source": mb.source, "target": mb.target,
+                                    "folder": mb.folder, "recoveryDatabase": rdb, "logPrefix": prefix,
+                                    "result": if ok { "restored" } else { "failed" }, "state": check["state"],
+                                    "stage": check["stage"], "items": check["items"], "bytes": check["bytes"],
+                                    "mailboxesInBackup": check["mailboxes"], "error": check["error"] }));
+            }
         }
         AppKind::Other => {}
     }
@@ -643,6 +839,78 @@ mod tests {
         assert!(ex.contains("New-MailboxDatabase -Recovery -Name Recovery-MailboxDatabase01"));
         assert!(ex.contains(r"$Edb = 'D:\R\db\db.edb'"));
         assert!(ex.contains("'Mailbox Database 01'''"));
+    }
+
+    #[test]
+    fn mailbox_restore_is_unattended_quoted_and_parsed() {
+        let logs: Vec<PathBuf> = [
+            "E01.log",
+            "E010000000A.LOG",
+            "E01.chk",
+            "E01res00001.jrs",
+            "notes.log",
+        ]
+        .iter()
+        .map(|n| PathBuf::from(r"D:\R\db").join(n))
+        .collect();
+        assert_eq!(log_prefix(logs.iter()).as_deref(), Some("E01"));
+        let two = [PathBuf::from("E00.log"), PathBuf::from("E01.log")];
+        assert_eq!(log_prefix(two.iter()), None);
+        let id = uuid::Uuid::parse_str("0123456789abcdef0123456789abcdef").unwrap();
+        assert_eq!(
+            recovery_db_name("Mailbox Database 01'", &id),
+            "Recovery-MailboxDatabase01-01234567"
+        );
+
+        let m = protocol::MailboxRestore {
+            source: "O'Brien; Remove-Mailbox *".into(),
+            target: "anna@example.com".into(),
+            folder: "Restored $(whoami)".into(),
+        };
+        let ps = mailbox_script(
+            Path::new(r"D:\R\db\db.edb"),
+            Path::new(r"D:\R\db"),
+            "E01",
+            "Recovery-x",
+            "Fenrir-1",
+            &m,
+        );
+        // Names never appear in the script, only their base64.
+        for raw in ["O'Brien", "Remove-Mailbox *", "whoami", "anna@", r"D:\R"] {
+            assert!(!ps.contains(raw), "{raw} spliced into the script");
+        }
+        use base64::Engine;
+        assert!(ps.contains(&base64::engine::general_purpose::STANDARD.encode(m.source.as_bytes())));
+        for step in [
+            "New-MailboxDatabase -Recovery",
+            "Mount-Database",
+            "New-MailboxRestoreRequest @p",
+            "Remove-MailboxRestoreRequest",
+            "Dismount-Database",
+            "Remove-MailboxDatabase",
+            "Clean Shutdown",
+        ] {
+            assert!(ps.contains(step), "missing {step}");
+        }
+        // Clean-up runs in finally, after the work.
+        assert!(ps.find("finally").unwrap() < ps.find("Remove-MailboxDatabase").unwrap());
+
+        let v = parse_mailbox("WARNING: x\r\n{\"state\":\"Completed\",\"stage\":\"done\",\"items\":412,\"bytes\":\"18.2 MB (19,084,288 bytes)\",\"mailboxes\":[\"Anna\"],\"error\":\"\"}\r\n").unwrap();
+        assert_eq!(v["items"], 412);
+        assert!(parse_mailbox("nothing").is_err());
+        assert!(parse_mailbox("{\"x\":1}").is_err());
+
+        assert!(check_mailbox(&m).is_ok());
+        assert!(check_mailbox(&protocol::MailboxRestore {
+            source: " ".into(),
+            ..m.clone()
+        })
+        .is_err());
+        assert!(check_mailbox(&protocol::MailboxRestore {
+            target: "a\nb".into(),
+            ..m.clone()
+        })
+        .is_err());
     }
 
     struct Mem(Vec<&'static str>);

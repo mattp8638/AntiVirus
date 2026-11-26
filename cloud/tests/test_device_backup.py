@@ -1411,6 +1411,16 @@ def test_one_sql_or_exchange_database_restores_on_its_own(client, admin, tenant)
                     "directory": "D:\\Restores", "attach_as": "sales_0901", "sql_instance": "SQL01\\FINANCE"}
     ex = {"agentId": agent_id, "component": "Microsoft Exchange Server\\DB01", "directory": "D:\\Restores"}
     assert client.post(url, headers=admin, json=ex).status_code == 200
+    # One mailbox unattended: Exchange only, both mailboxes on one line, target typed again.
+    mb = {"source": "Anna Smith", "target": "anna@example.com", "folder": "Restored", "confirm": "ANNA@example.com"}
+    for bad_mb in ({**mb, "confirm": ""}, {**mb, "source": ""}, {**mb, "target": "a\nb"}, "Anna"):
+        assert client.post(url, headers=admin, json={**ex, "mailbox": bad_mb}).status_code == 400, bad_mb
+    assert client.post(url, headers=admin, json={**body, "mailbox": mb}).status_code == 400  # SQL Server
+    job_id = client.post(url, headers=admin, json={**ex, "mailbox": mb}).json()["id"]
+    from fenrir_cloud import db as database
+    from fenrir_cloud.models import BackupJob
+    with database.session_factory()() as s:
+        assert s.get(BackupJob, job_id).kind["mailbox"] == {"source": "Anna Smith", "target": "anna@example.com", "folder": "Restored"}
 
 
 def test_restore_to_azure_or_aws_and_keep_a_standby_vm(client, admin, tenant):

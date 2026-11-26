@@ -73,11 +73,21 @@ pub fn attach(u: &mut JobUpdate, outputs: Value, verification: Value, checks: Va
         .as_array()
         .map(|a| a.iter().filter(|o| o.get("error").is_some()).count())
         .unwrap_or(0);
+    // An application check that found problems or could not run (CHECKDB
+    // errors, a mailbox restore that failed) leaves the restore unproven.
+    let failed_checks = checks
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|c| matches!(c["result"].as_str(), Some("errors" | "failed" | "not run")))
+                .count()
+        })
+        .unwrap_or(0);
     let ev = json!({
         "outputs": outputs,
         "verification": verification,
         "checks": checks,
-        "verified": mismatches == 0 && failed_outputs == 0,
+        "verified": mismatches == 0 && failed_outputs == 0 && failed_checks == 0,
         "hashedAt": chrono_now(),
     });
     if mismatches > 0 {
@@ -139,5 +149,13 @@ mod tests {
         );
         assert_eq!(ok.state, JobState::Succeeded);
         assert_eq!(ok.result.as_ref().unwrap()["evidence"]["verified"], true);
+        let mut bad = crate::jobs::finished(JobState::Warning);
+        attach(
+            &mut bad,
+            json!([{ "path": "x", "bytes": 1, "sha256": "00" }]),
+            json!([]),
+            json!([{ "type": "sql-checkdb", "result": "errors" }]),
+        );
+        assert_eq!(bad.result.as_ref().unwrap()["evidence"]["verified"], false);
     }
 }

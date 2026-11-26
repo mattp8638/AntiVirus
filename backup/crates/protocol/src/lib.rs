@@ -350,6 +350,19 @@ pub struct BackupSettings {
     pub full_read: bool,
 }
 
+/// One mailbox to restore from an Exchange database backup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailboxRestore {
+    /// Display name or mailbox GUID of the mailbox inside the backup.
+    pub source: String,
+    /// The live mailbox to restore into (any identity Exchange accepts).
+    pub target: String,
+    /// Folder of the target mailbox the items go under; blank merges them
+    /// into the original folders.
+    #[serde(default)]
+    pub folder: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobKind {
@@ -378,6 +391,10 @@ pub enum JobKind {
         attach_as: Option<String>,
         #[serde(default)]
         sql_instance: String,
+        /// Exchange: replay the logs, mount a recovery database and restore
+        /// this mailbox from it, then remove the recovery database.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mailbox: Option<MailboxRestore>,
     },
     /// Build (and keep on the agent) the file catalogue of an image, for
     /// searching across backups (docs/design/search.md).
