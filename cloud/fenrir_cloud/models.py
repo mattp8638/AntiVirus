@@ -4017,5 +4017,7 @@ class AppleMdmCommand(Base):
     requested_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 # ISMS tables live in their own module; importing it here puts them in the shared metadata (create_all, deletion).
 from .isms import models as _isms_models  # noqa: E402,F401
