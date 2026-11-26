@@ -161,21 +161,49 @@ def build_context(db: Session, tenant_id: str) -> dict:
     }
 
 
+RACI_WORDS = (("responsible", "R"), ("accountable", "A"), ("consulted", "C"), ("informed", "I"))
+
+
 def _management_context(db: Session, tenant_id: str) -> dict:
-    """Objectives, the audit programme and improvement figures, as the standalone app's phase2Context gives them.
-    People (roles, RACI, acknowledgements) and management review are filled in as those modules are ported."""
-    from . import audits, management
+    """People, objectives, the audit programme, improvement and acknowledgements, as the standalone app's
+    phase2Context gives them."""
+    from . import audits, management, people, review
     from .domain._js import js_number
 
     def unit(o: dict) -> str:
         return f" {o['unit']}" if o["unit"] else ""
+
+    matrix = people.raci(db, tenant_id)
+    held = next((r for r in review.review_rows(db, tenant_id) if r["status"] == "held"), None)
+    role_names = {r["id"]: r["name"] for r in matrix["roles"]}
+
+    def letters(activity_id: str, letter: str) -> str:
+        return ", ".join(role_names.get(c["roleId"], "") for c in matrix["cells"]
+                         if c["activityId"] == activity_id and c["letter"] == letter)
 
     objectives = [o for o in management.objective_rows(db, tenant_id) if o["status"] == "active"]
     programmes = audits.programme_rows(db, tenant_id)
     prog = programmes[0] if programmes else None
     ncs = management.nonconformity_rows(db, tenant_id, "all")
     return {
-        "isms_roles": [], "raci": [], "last_review": None, "acknowledgements": [],
+        "isms_roles": [{"name": r["name"], "holders": ", ".join(h["name"] for h in r["holders"]) or "Not assigned",
+                        "responsibilities": r["responsibilities"] or "Not described yet.",
+                        "authorities": r["authorities"]} for r in people.role_rows(db, tenant_id)],
+        "raci": [{"activity": a["title"], **{word: letters(a["id"], letter) for word, letter in RACI_WORDS}}
+                 for a in matrix["activities"]],
+        "last_review": {
+            "ref": held["ref"], "title": held["title"], "held_on": uk_date(held["heldOn"]) if held["heldOn"] else "",
+            "chair": held["chairName"] or "Not recorded", "attendees": held["attendees"], "minutes": held["minutes"],
+            "decisions": held["decisions"], "changes_needed": held["changesNeeded"] or "None.",
+            "period": (f"{uk_date(held['pack']['periodStart'])} to {uk_date(held['pack']['periodEnd'])}"
+                       if held["pack"] else ""),
+            "actions": [{"description": a["description"], "owner": a["ownerName"] or "Unassigned",
+                         "due": uk_date(a["dueOn"]), "status": "Done" if a["doneAt"] else "Open"}
+                        for a in held["actions"]],
+        } if held else None,
+        "acknowledgements": [{"document": f"{c['documentNumber']} {c['documentTitle']}",
+                              "completion": f"{c['progress']['done']} of {c['progress']['total']}",
+                              "status": _cap(c["status"])} for c in people.campaign_rows(db, tenant_id)],
         "objectives": [{
             "ref": o["ref"], "title": o["title"], "measure": o["measure"],
             "target": f"{'At least' if o['direction'] == 'at_least' else 'At most'} {js_number(o['target'])}{unit(o)}",

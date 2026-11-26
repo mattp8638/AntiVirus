@@ -22,6 +22,10 @@ export default function Portal() {
   const [browsing, setBrowsing] = useState<BrowseImage | null>(null);
   const { data: policies, reload: reloadPolicies } = useListData<any>("/api/portal/policies");
   const [reading, setReading] = useState<string | null>(null);
+  // ISMS documents the customer's ISMS manager has asked this person to acknowledge.
+  const { data: ismsAcks, reload: reloadAcks } = useData<any>("/api/portal/isms/acknowledgements");
+  const ismsPending: any[] = Array.isArray(ismsAcks?.pending) ? ismsAcks.pending : [];
+  const [ismsReading, setIsmsReading] = useState<string | null>(null);
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24 }}>
       <div className="row" style={{ marginBottom: 20 }}>
@@ -32,12 +36,16 @@ export default function Portal() {
         <button className="primary" onClick={() => setCreating(true)}>Get help</button>
         <button className="small" onClick={logout}>Sign out</button>
       </div>
-      <Tabs tabs={["My requests", "Knowledge base", "Invoices", "Devices", ...(policies?.length ? [`Policies${policies.some((p: any) => p.status !== "current") ? " (to read)" : ""}`] : []), ...(backups?.length ? ["My backups"] : [])]} active={tab} onChange={setTab} />
+      <Tabs tabs={["My requests", "Knowledge base", "Invoices", "Devices", ...(policies?.length ? [`Policies${policies.some((p: any) => p.status !== "current") ? " (to read)" : ""}`] : []), ...(ismsPending.length ? [`Documents to read (${ismsPending.length})`] : []), ...(backups?.length ? ["My backups"] : [])]} active={tab} onChange={setTab} />
       <div className="card">
         {tab.startsWith("Policies") && <Table rows={policies} onRow={(p: any) => setReading(p.policyId)} empty="No policies to read." columns={[
           { key: "title", label: "Policy", render: (p: any) => <b>{displayValue(p.title)}</b> },
           { key: "version", label: "Version", render: (p: any) => `v${p.version}` },
           { key: "status", label: "", render: (p: any) => <Pill value={p.status === "current" ? `accepted ${fmtTime(p.acknowledgedAt)}` : "please read"} tone={p.status === "current" ? "good" : "warn"} /> }]} />}
+        {tab.startsWith("Documents to read") && <Table rows={ismsPending} onRow={(p: any) => setIsmsReading(p.id)} empty="Nothing to read." columns={[
+          { key: "documentTitle", label: "Document", render: (p: any) => <b>{p.documentNumber} {displayValue(p.documentTitle)}</b> },
+          { key: "version", label: "Version", render: (p: any) => `v${p.version}` },
+          { key: "dueOn", label: "Please read by", render: (p: any) => `${p.dueOn.slice(8, 10)}/${p.dueOn.slice(5, 7)}/${p.dueOn.slice(0, 4)}` }]} />}
         {tab === "My backups" && <>
           <p className="small muted" style={{ marginTop: 0 }}>Backups of your devices. Open one to find files and download them as they were then.</p>
           <Table rows={backups} onRow={(b) => setBrowsing(b)} empty="No backups yet." columns={[
@@ -64,6 +72,7 @@ export default function Portal() {
       {open && <RequestDetail id={open} onClose={() => { setOpen(null); reload(); }} />}
       {browsing && <FileBrowser image={browsing} portal onClose={() => setBrowsing(null)} />}
       {reading && <ReadPolicy id={reading} onClose={() => { setReading(null); reloadPolicies(); }} />}
+      {ismsReading && <ReadIsmsDocument id={ismsReading} onClose={() => { setIsmsReading(null); reloadAcks(); }} />}
     </div>
   );
 }
@@ -121,6 +130,22 @@ function ReadPolicy({ id, onClose }: { id: string; onClose: () => void }) {
         <button className="primary" disabled={!ok || busy} onClick={() => run(() => api(`/api/portal/policies/${id}/acknowledge`, { body: { version: data.version, sha256: data.sha256, confirm: true } }), "Thank you: your acceptance is recorded").then((r) => r && onClose())}>Accept</button>
       </>}>
       <Markdown text={data.body} />
+    </Modal>
+  );
+}
+
+function ReadIsmsDocument({ id, onClose }: { id: string; onClose: () => void }) {
+  const { data } = useData<any>(`/api/portal/isms/acknowledgements/${id}`);
+  const { run, busy } = useAction();
+  const [ok, setOk] = useState(false);
+  if (!data) return null;
+  return (
+    <Modal title={`${data.documentNumber} ${data.documentTitle} (version ${data.version})`} wide onClose={onClose}
+      footer={data.acknowledgedAt ? <button onClick={onClose}>Close</button> : <>
+        <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} /> I have read and understood this document</label>
+        <button className="primary" disabled={!ok || busy} onClick={() => run(() => api(`/api/portal/isms/acknowledgements/${id}/acknowledge`, { body: { sha256: data.sha256, confirm: true } }), "Thank you: your acknowledgement is recorded").then((r) => r && onClose())}>Acknowledge</button>
+      </>}>
+      {(Array.isArray(data.blocks) ? data.blocks : []).map((b: any) => <section key={b.ref} aria-label={b.ref}><Markdown text={b.markdown} /></section>)}
     </Modal>
   );
 }

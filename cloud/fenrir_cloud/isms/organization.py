@@ -107,11 +107,17 @@ def list_items(db: Session, reg: Register, tenant_id: str) -> list:
                            .order_by(*(getattr(m, c) for c in reg.order), m.id)).scalars())
 
 
+def _text(row) -> str:
+    """What the management review shows for a change: an issue's description or a party's or entity's name."""
+    return str(getattr(row, "description", None) or getattr(row, "name", None) or "")[:300]
+
+
 def add_item(db: Session, reg: Register, tenant_id: str, actor: str, data: dict[str, Any]):
     row = reg.model(tenant_id=tenant_id, updated_by=actor, **_clean(reg, data))
     db.add(row)
     db.flush()
-    audit.record(db, actor, "isms.register_added", reg.label, tenant_id, table=reg.model.__tablename__, id=row.id)
+    audit.record(db, actor, "isms.register_added", reg.label, tenant_id, table=reg.model.__tablename__, id=row.id,
+                 text=_text(row))
     return row
 
 
@@ -120,13 +126,13 @@ def update_item(db: Session, reg: Register, row, actor: str, data: dict[str, Any
         setattr(row, field, value)
     row.updated_at, row.updated_by = utcnow(), actor
     audit.record(db, actor, "isms.register_updated", reg.label, row.tenant_id, table=reg.model.__tablename__,
-                 id=row.id)
+                 id=row.id, text=_text(row))
     return row
 
 
 def delete_item(db: Session, reg: Register, row, actor: str) -> None:
     audit.record(db, actor, "isms.register_deleted", reg.label, row.tenant_id, table=reg.model.__tablename__,
-                 id=row.id)
+                 id=row.id, text=_text(row))
     db.delete(row)
 
 

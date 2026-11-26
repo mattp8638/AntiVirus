@@ -92,6 +92,7 @@ def nonconformity_rows(db: Session, tenant_id: str, status: str = "open", nc_id:
             "stage": stage, "stageText": NC_STAGE_TEXT[stage],
             "overdue": bool(r.status == "open" and r.due_on and r.due_on < today),
             "effective": r.effective, "effectivenessNote": r.effectiveness_note, "closureNote": r.closure_note,
+            "closedAt": r.closed_at.isoformat() + "Z" if r.closed_at else None,
             "blockers": effectiveness_blockers(NcState(r.kind, r.status, r.root_cause),
                                                [a.done_at is not None for a in acts]),
             "actions": [{"id": a.id, "description": a.description, "ownerId": a.owner_user_id,
